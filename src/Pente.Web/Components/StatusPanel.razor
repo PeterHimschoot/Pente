@@ -1,0 +1,80 @@
+@using Pente.Core
+
+<aside class="panel">
+    @foreach (var color in new[] { Stone.White, Stone.Black })
+    {
+        var active = !Game.IsOver && Game.CurrentPlayer == color;
+        <div class="player @(active ? "active" : "") @(Game.Winner == color ? "winner" : "")">
+            <span class="dot big @(color == Stone.White ? "white" : "black")"></span>
+            <div class="player-info">
+                <div class="player-name">@Settings.NameOf(color)</div>
+                <div class="captures" title="Captured pairs (5 wins)">
+                    @for (int i = 0; i < GameOptions.CapturesToWin; i++)
+                    {
+                        <span class="cap @(i < Game.Captures(color) ? "filled" : "") @(color == Stone.White ? "of-black" : "of-white")"></span>
+                    }
+                    <span class="cap-count">@Game.Captures(color)/@GameOptions.CapturesToWin</span>
+                </div>
+            </div>
+            @if (active)
+            {
+                <span class="turn-tag">@(Thinking ? "thinking…" : "to move")</span>
+            }
+        </div>
+    }
+
+    <div class="status-line" aria-live="polite">
+        @if (Game.IsOver)
+        {
+            <strong>@ResultText</strong>
+        }
+        else if (!string.IsNullOrEmpty(Message))
+        {
+            <span class="warn">@Message</span>
+        }
+        else if (Game.LastMove is { } last)
+        {
+            <span>Move @Game.History.Count: @(last.Player) @last.Point.ToNotation()@(last.Captured.Count > 0 ? $" — captured {last.Captured.Count / 2} pair{(last.Captured.Count > 2 ? "s" : "")}" : "")</span>
+        }
+        else
+        {
+            <span>White opens on the center point.</span>
+        }
+    </div>
+
+    <div class="buttons">
+        <button type="button" class="secondary" disabled="@(!CanUndo)" @onclick="OnUndo">Undo</button>
+        <button type="button" class="primary" @onclick="OnNewGame">New game</button>
+    </div>
+
+    <details class="help">
+        <summary>How to play</summary>
+        <ul>
+            <li>Take turns placing stones on the intersections. White starts on the center.</li>
+            <li>Win with <b>five or more in a row</b> — horizontally, vertically or diagonally.</li>
+            <li>Or win by <b>capturing five pairs</b>: flank exactly two enemy stones (●○○●) to remove them.</li>
+            <li>Placing a stone between two enemies is safe — you can only be captured by their move.</li>
+            <li><b>Zoom</b> with the mouse wheel, pinch or the +/− buttons. <b>Drag</b> to pan; a click places a stone.</li>
+        </ul>
+    </details>
+</aside>
+
+@code {
+    [Parameter, EditorRequired] public GameState Game { get; set; } = default!;
+    [Parameter, EditorRequired] public GameSettings Settings { get; set; } = default!;
+    [Parameter] public bool Thinking { get; set; }
+    [Parameter] public bool CanUndo { get; set; }
+    [Parameter] public string? Message { get; set; }
+    [Parameter] public EventCallback OnUndo { get; set; }
+    [Parameter] public EventCallback OnNewGame { get; set; }
+
+    private string ResultText => Game.WinReason switch
+    {
+        WinReason.Draw => "Draw — the board is full.",
+        WinReason.FiveInARow => $"{Settings.NameOf(Game.Winner)} {Wins} with five in a row!",
+        WinReason.Captures => $"{Settings.NameOf(Game.Winner)} {Wins} by capturing five pairs!",
+        _ => "",
+    };
+
+    private string Wins => Settings.NameOf(Game.Winner) == "You" ? "win" : "wins";
+}

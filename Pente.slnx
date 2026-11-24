@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Pente.Core/Pente.Core.csproj" />
+    <Project Path="src/Pente.Web/Pente.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Pente.Core.Tests/Pente.Core.Tests.csproj" />
+  </Folder>
+</Solution>

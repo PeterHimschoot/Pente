@@ -1,0 +1,96 @@
+@using Pente.Core
+@using Pente.Core.Ai
+
+<div class="overlay">
+    <form class="dialog" @onsubmit="Start" @onsubmit:preventDefault>
+        <h2>New game</h2>
+
+        <fieldset class="segmented" aria-label="Opponent">
+            <label class="@(_s.Mode == GameMode.VersusComputer ? "on" : "")">
+                <input type="radio" name="mode" checked="@(_s.Mode == GameMode.VersusComputer)"
+                       @onchange="() => _s.Mode = GameMode.VersusComputer" />
+                vs Computer
+            </label>
+            <label class="@(_s.Mode == GameMode.TwoPlayers ? "on" : "")">
+                <input type="radio" name="mode" checked="@(_s.Mode == GameMode.TwoPlayers)"
+                       @onchange="() => _s.Mode = GameMode.TwoPlayers" />
+                Two players
+            </label>
+        </fieldset>
+
+        @if (_s.Mode == GameMode.VersusComputer)
+        {
+            <div class="field">
+                <span class="field-label">Play as</span>
+                <fieldset class="segmented small" aria-label="Your color">
+                    <label class="@(_s.HumanColor == Stone.White ? "on" : "")">
+                        <input type="radio" name="color" checked="@(_s.HumanColor == Stone.White)"
+                               @onchange="() => _s.HumanColor = Stone.White" />
+                        <span class="dot white"></span> White (moves first)
+                    </label>
+                    <label class="@(_s.HumanColor == Stone.Black ? "on" : "")">
+                        <input type="radio" name="color" checked="@(_s.HumanColor == Stone.Black)"
+                               @onchange="() => _s.HumanColor = Stone.Black" />
+                        <span class="dot black"></span> Black
+                    </label>
+                </fieldset>
+            </div>
+            <div class="field">
+                <span class="field-label">Difficulty</span>
+                <fieldset class="segmented small" aria-label="Difficulty">
+                    @foreach (var level in Enum.GetValues<Difficulty>())
+                    {
+                        var l = level;
+                        <label class="@(_s.Level == l ? "on" : "")">
+                            <input type="radio" name="level" checked="@(_s.Level == l)" @onchange="() => _s.Level = l" />
+                            @l
+                        </label>
+                    }
+                </fieldset>
+            </div>
+        }
+        else
+        {
+            <div class="field two">
+                <label><span class="field-label"><span class="dot white"></span> White</span>
+                    <input type="text" maxlength="20" @bind="_s.WhiteName" /></label>
+                <label><span class="field-label"><span class="dot black"></span> Black</span>
+                    <input type="text" maxlength="20" @bind="_s.BlackName" /></label>
+            </div>
+        }
+
+        <label class="check">
+            <input type="checkbox" @bind="_s.TournamentRule" />
+            <span>
+                Tournament rule
+                <small>White's second stone must be at least 3 intersections from the center.</small>
+            </span>
+        </label>
+
+        <div class="actions">
+            @if (CanCancel)
+            {
+                <button type="button" class="secondary" @onclick="OnCancel">Cancel</button>
+            }
+            <button type="submit" class="primary">Start game</button>
+        </div>
+    </form>
+</div>
+
+@code {
+    private GameSettings _s = new();
+
+    [Parameter] public GameSettings Initial { get; set; } = new();
+    [Parameter] public bool CanCancel { get; set; }
+    [Parameter] public EventCallback<GameSettings> OnStart { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    protected override void OnInitialized() => _s = Initial.Copy();
+
+    private Task Start()
+    {
+        if (string.IsNullOrWhiteSpace(_s.WhiteName)) _s.WhiteName = "Player 1";
+        if (string.IsNullOrWhiteSpace(_s.BlackName)) _s.BlackName = "Player 2";
+        return OnStart.InvokeAsync(_s.Copy());
+    }
+}

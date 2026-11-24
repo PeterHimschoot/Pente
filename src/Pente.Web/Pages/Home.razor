@@ -1,0 +1,166 @@
+﻿@page "/"
+@using Pente.Core
+@using Pente.Core.Ai
+@using Pente.Web.Components
+
+<PageTitle>Pente</PageTitle>
+
+<div class="app">
+    <header class="topbar">
+        <h1><span class="logo-stones"><span class="dot white"></span><span class="dot black"></span></span> Pente</h1>
+        @if (_game is not null)
+        {
+            <span class="mode">@ModeText</span>
+        }
+    </header>
+
+    @if (_game is not null)
+    {
+        <main class="game">
+            <section class="board-area">
+                <GameBoard @ref="_board" Game="_game" Interactive="IsHumanTurn" OnPlace="OnHumanPlace" />
+
+                @if (_game.IsOver && !_bannerDismissed)
+                {
+                    <div class="banner">
+                        <div class="banner-title">@BannerText</div>
+                        <div class="banner-actions">
+                            <button type="button" class="secondary" @onclick="() => _bannerDismissed = true">View board</button>
+                            <button type="button" class="primary" @onclick="Rematch">Play again</button>
+                        </div>
+                    </div>
+                }
+            </section>
+
+            <StatusPanel Game="_game" Settings="_settings" Thinking="_thinking" Message="@_message"
+                         CanUndo="CanUndo" OnUndo="Undo" OnNewGame="() => _showDialog = true" />
+        </main>
+    }
+
+    @if (_showDialog)
+    {
+        <NewGameDialog Initial="_settings" CanCancel="_game is not null"
+                       OnStart="StartGame" OnCancel="() => _showDialog = false" />
+    }
+</div>
+
+@code {
+    private GameSettings _settings = new();
+    private GameState? _game;
+    private IPenteAi? _ai;
+    private GameBoard? _board;
+    private bool _showDialog = true;
+    private bool _thinking;
+    private bool _bannerDismissed;
+    private string? _message;
+    private int _generation; // bumps on every new game, so a pending AI move for an old game is discarded
+
+    private bool IsHumanTurn =>
+        _game is not null && !_game.IsOver && !_thinking && !_showDialog
+        && _game.CurrentPlayer != _settings.ComputerColor;
+
+    private bool CanUndo =>
+        _game is not null && !_thinking && _game.History.Any(m => m.Player != _settings.ComputerColor);
+
+    private string ModeText => _settings.Mode == GameMode.VersusComputer
+        ? $"You ({_settings.HumanColor}) vs Computer · {_settings.Level}{(_settings.TournamentRule ? " · tournament rule" : "")}"
+        : $"{_settings.WhiteName} vs {_settings.BlackName}{(_settings.TournamentRule ? " · tournament rule" : "")}";
+
+    private string BannerText
+    {
+        get
+        {
+            if (_game is null) return "";
+            if (_game.WinReason == WinReason.Draw) return "It's a draw!";
+            var how = _game.WinReason == WinReason.Captures ? "by capturing five pairs" : "with five in a row";
+            if (_settings.Mode == GameMode.VersusComputer)
+            {
+                return _game.Winner == _settings.HumanColor ? $"You win {how}! 🎉" : $"The computer wins {how}.";
+            }
+            return $"{_settings.NameOf(_game.Winner)} wins {how}! 🎉";
+        }
+    }
+
+    private async Task StartGame(GameSettings settings)
+    {
+        _settings = settings;
+        _showDialog = false;
+        await NewGame();
+    }
+
+    private Task Rematch() => NewGame();
+
+    private async Task NewGame()
+    {
+        _generation++;
+        _game = new GameState(new GameOptions(_settings.TournamentRule));
+        _ai = _settings.Mode == GameMode.VersusComputer ? new PenteAi(_settings.Level) : null;
+        _thinking = false;
+        _bannerDismissed = false;
+        _message = null;
+        if (_board is not null) await _board.ResetZoomAsync();
+        await MaybeComputerMove();
+    }
+
+    private async Task OnHumanPlace(Point p)
+    {
+        if (_game is null || !IsHumanTurn) return;
+        if (!_game.IsLegal(p, out var reason))
+        {
+            _message = reason;
+            return;
+        }
+        _message = null;
+        _game.Play(p);
+        await MaybeComputerMove();
+    }
+
+    private async Task MaybeComputerMove()
+    {
+        if (_game is null || _ai is null || _game.IsOver || _game.CurrentPlayer != _settings.ComputerColor) return;
+
+        int generation = _generation;
+        _thinking = true;
+        StateHasChanged();
+        // Let the browser paint the human's stone and the "thinking" state before the (synchronous) search runs.
+        await Task.Delay(60);
+        if (generation != _generation) return;
+
+        var game = _game;
+        var started = DateTime.UtcNow;
+        var move = await _ai.ChooseMoveAsync(game);
+
+        // Keep very fast replies from feeling instantaneous.
+        var elapsed = DateTime.UtcNow - started;
+        if (elapsed < TimeSpan.FromMilliseconds(350))
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(350) - elapsed);
+        }
+        if (generation != _generation) return;
+
+        game.Play(move);
+        _thinking = false;
+    }
+
+    private async Task Undo()
+    {
+        if (_game is null || !CanUndo) return;
+        _message = null;
+        _bannerDismissed = false;
+
+        if (_settings.Mode == GameMode.TwoPlayers)
+        {
+            _game.Undo();
+            return;
+        }
+
+        // Undo back to (and including) the human's last move.
+        while (_game.History.Count > 0)
+        {
+            var last = _game.History[^1];
+            _game.Undo();
+            if (last.Player == _settings.HumanColor) break;
+        }
+        await MaybeComputerMove();
+    }
+}

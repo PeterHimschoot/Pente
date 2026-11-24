@@ -1,0 +1,208 @@
+@using Pente.Core
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div class="board-frame">
+    <svg @ref="_svg"
+         class="board @(Interactive ? "interactive" : "") ghost-@GhostColor.ToString().ToLowerInvariant()"
+         viewBox="0 0 @Extent @Extent"
+         data-board="@BoardString()"
+         data-interactive="@(Interactive ? "1" : "0")"
+         xmlns="http://www.w3.org/2000/svg"
+         role="img" aria-label="Pente board">
+        <defs>
+            <radialGradient id="grad-white" cx="35%" cy="30%" r="70%">
+                <stop offset="0%" stop-color="#ffffff" />
+                <stop offset="70%" stop-color="#e4e4e4" />
+                <stop offset="100%" stop-color="#a9a9a9" />
+            </radialGradient>
+            <radialGradient id="grad-black" cx="35%" cy="30%" r="70%">
+                <stop offset="0%" stop-color="#6a6a6a" />
+                <stop offset="45%" stop-color="#202020" />
+                <stop offset="100%" stop-color="#000000" />
+            </radialGradient>
+            <filter id="stone-shadow" x="-30%" y="-30%" width="160%" height="160%">
+                <feDropShadow dx="1.5" dy="2" stdDeviation="1.6" flood-color="#000" flood-opacity="0.45" />
+            </filter>
+        </defs>
+
+        <rect class="wood" x="0" y="0" width="@Extent" height="@Extent" rx="10" />
+
+        @* Grid *@
+        @for (int i = 0; i < Board.Size; i++)
+        {
+            var pos = Coord(i);
+            <line class="grid" x1="@Margin" y1="@pos" x2="@(Extent - Margin)" y2="@pos" />
+            <line class="grid" x1="@pos" y1="@Margin" x2="@pos" y2="@(Extent - Margin)" />
+            <g class="labels">
+                <text class="label" x="@pos" y="@(Margin / 2 + 4)">@ColumnLabel(i)</text>
+                <text class="label" x="@pos" y="@(Extent - Margin / 2 + 4)">@ColumnLabel(i)</text>
+                <text class="label" x="@(Margin / 2)" y="@(pos + 4)">@(Board.Size - i)</text>
+                <text class="label" x="@(Extent - Margin / 2)" y="@(pos + 4)">@(Board.Size - i)</text>
+            </g>
+        }
+
+        @* Star points *@
+        @foreach (var (r, c) in StarPoints)
+        {
+            <circle class="star" cx="@Coord(c)" cy="@Coord(r)" r="@(r == 9 && c == 9 ? 5 : 3.5)" />
+        }
+
+        @* Tournament rule: forbidden zone for White's second stone *@
+        @if (ShowTournamentZone)
+        {
+            var lo = Coord(Board.Center.Row - (GameOptions.TournamentDistance - 1)) - Cell / 2.0;
+            var size = (2 * (GameOptions.TournamentDistance - 1) + 1) * Cell;
+            <rect class="forbidden" x="@lo" y="@lo" width="@size" height="@size" rx="6" />
+        }
+
+        @* Stones that were just captured fade out *@
+        @if (Game.LastMove is { } last)
+        {
+            var capturedColor = last.Player.Opponent();
+            foreach (var p in last.Captured)
+            {
+                <circle @key="@($"cap-{Game.History.Count}-{p.Row}-{p.Col}")"
+                        class="stone captured @StoneClass(capturedColor)"
+                        cx="@Coord(p.Col)" cy="@Coord(p.Row)" r="@StoneRadius" />
+            }
+        }
+
+        @* Stones *@
+        @for (int r = 0; r < Board.Size; r++)
+        {
+            for (int c = 0; c < Board.Size; c++)
+            {
+                var s = Game.Board[r, c];
+                if (s == Stone.None) continue;
+                <circle @key="@($"{r}-{c}-{s}")" class="stone @StoneClass(s)"
+                        cx="@Coord(c)" cy="@Coord(r)" r="@StoneRadius" />
+            }
+        }
+
+        @* Last move marker *@
+        @if (Game.LastMove is { } lm && Game.Board[lm.Point] != Stone.None)
+        {
+            <circle class="last-move @(lm.Player == Stone.White ? "on-white" : "on-black")"
+                    cx="@Coord(lm.Point.Col)" cy="@Coord(lm.Point.Row)" r="5" />
+        }
+
+        @* Winning line *@
+        @if (Game.WinLine.Count > 0)
+        {
+            var a = Game.WinLine[0];
+            var b = Game.WinLine[^1];
+            <line class="win-line" x1="@Coord(a.Col)" y1="@Coord(a.Row)" x2="@Coord(b.Col)" y2="@Coord(b.Row)" />
+        }
+
+        @* Hover ghost; positioned by JS. Static attributes so re-renders don't reset it. *@
+        <circle class="ghost" cx="-100" cy="-100" r="@StoneRadius" visibility="hidden" />
+    </svg>
+
+    <div class="zoom-controls" role="group" aria-label="Zoom">
+        <span class="zoom-hint">Scroll or pinch to zoom · drag to pan</span>
+        <button type="button" title="Zoom in" aria-label="Zoom in" @onclick="ZoomIn">+</button>
+        <button type="button" title="Zoom out" aria-label="Zoom out" @onclick="ZoomOut">&minus;</button>
+        <button type="button" title="Reset zoom" aria-label="Reset zoom" @onclick="ResetZoom">&#x27F2;</button>
+    </div>
+</div>
+
+@code {
+    public const int Cell = 40;
+    public const int Margin = 40;
+    public const int Extent = Margin * 2 + Cell * (Board.Size - 1);
+    private const double StoneRadius = Cell * 0.46;
+
+    private static readonly (int, int)[] StarPoints =
+        [(3, 3), (3, 9), (3, 15), (9, 3), (9, 9), (9, 15), (15, 3), (15, 9), (15, 15)];
+
+    private ElementReference _svg;
+    private IJSObjectReference? _module;
+    private IJSObjectReference? _controller;
+    private DotNetObjectReference<GameBoard>? _selfRef;
+
+    [Parameter, EditorRequired] public GameState Game { get; set; } = default!;
+
+    /// <summary>Whether the user may place a stone now.</summary>
+    [Parameter] public bool Interactive { get; set; }
+
+    [Parameter] public EventCallback<Point> OnPlace { get; set; }
+
+    private Stone GhostColor => Game.CurrentPlayer;
+
+    private bool ShowTournamentZone =>
+        Interactive && Game.Options.TournamentRule && Game.History.Count == 2;
+
+    private static double Coord(int index) => Margin + index * Cell;
+
+    private static string ColumnLabel(int col) => ((char)('A' + col + (col >= 8 ? 1 : 0))).ToString();
+
+    private static string StoneClass(Stone s) => s == Stone.White ? "white" : "black";
+
+    private string BoardString()
+    {
+        var chars = new char[Board.Size * Board.Size];
+        for (int r = 0; r < Board.Size; r++)
+            for (int c = 0; c < Board.Size; c++)
+                chars[r * Board.Size + c] = (char)('0' + (int)Game.Board[r, c]);
+        return new string(chars);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _selfRef = DotNetObjectReference.Create(this);
+        try
+        {
+            _module = await JS.InvokeAsync<IJSObjectReference>("import", "./Components/GameBoard.razor.js");
+            _controller = await _module.InvokeAsync<IJSObjectReference>("attach", _svg, _selfRef, Board.Size, Margin, Cell);
+        }
+        catch (JSException ex)
+        {
+            Console.Error.WriteLine($"Board zoom/placement script failed to load: {ex.Message}");
+        }
+    }
+
+    [JSInvokable]
+    public Task PlaceStone(int row, int col)
+    {
+        if (!Interactive) return Task.CompletedTask;
+        return OnPlace.InvokeAsync(new Point(row, col));
+    }
+
+    private Task ZoomIn() => Call("zoomBy", 1.5);
+    private Task ZoomOut() => Call("zoomBy", 1 / 1.5);
+    private Task ResetZoom() => Call("reset");
+
+    public Task ResetZoomAsync() => ResetZoom();
+
+    private async Task Call(string method, params object[] args)
+    {
+        if (_controller is null) return;
+        try
+        {
+            await _controller.InvokeVoidAsync(method, args);
+        }
+        catch (JSException ex)
+        {
+            Console.Error.WriteLine($"Board '{method}' failed: {ex.Message}");
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (_controller is not null)
+            {
+                await _controller.InvokeVoidAsync("detach");
+                await _controller.DisposeAsync();
+            }
+            if (_module is not null) await _module.DisposeAsync();
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        _selfRef?.Dispose();
+    }
+}
